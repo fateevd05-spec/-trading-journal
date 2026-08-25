@@ -10,6 +10,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <title>Трейдерский дневник</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#0b1020;--panel:#121a2d;--panel2:#18223a;--text:#edf2ff;--muted:#8e9bb7;--green:#35d07f;--red:#ff5c6c;--yellow:#f5c451;--blue:#5d8cff;--border:#263452;--radius:14px;--font:Inter,Arial,sans-serif;--panel-padding:18px}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px}
@@ -199,9 +200,23 @@ button,.tab-trigger,.filter-btn{min-height:44px;touch-action:manipulation;-webki
 input,select,textarea{font-size:16px!important} textarea{min-height:100px}
 @media(max-width:600px){body{overflow-x:hidden}.container{padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right));padding-top:max(12px,env(safe-area-inset-top))}.header{gap:10px}.header-left{flex-wrap:wrap}.tabs-bar{position:sticky;top:0;z-index:20;background:var(--bg);padding:6px 0}.table-wrap{-webkit-overflow-scrolling:touch}.modal{padding:max(12px,env(safe-area-inset-top)) 10px max(12px,env(safe-area-inset-bottom))}.modal-content{max-height:92vh;overflow:auto;-webkit-overflow-scrolling:touch}.gallery-grid{grid-template-columns:repeat(3,1fr)}
 }
+.cloud-bar{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:7px 10px}.cloud-status{font-size:12px;color:var(--muted)}.cloud-btn{padding:7px 10px;font-size:12px}.auth-overlay{position:fixed;inset:0;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;z-index:5000;padding:20px}.auth-card{width:min(420px,100%);background:var(--panel);border:1px solid var(--border);border-radius:18px;padding:22px;box-shadow:0 20px 70px rgba(0,0,0,.4)}.auth-card h2{margin-top:0}.auth-card p{color:var(--muted);font-size:13px;line-height:1.5}.auth-card .field{margin-bottom:12px}.auth-error{color:var(--red);font-size:13px;min-height:18px;margin:8px 0}.auth-success{color:var(--green);font-size:13px;min-height:18px;margin:8px 0}.auth-switch{background:none;color:var(--blue);padding:8px 0}.syncing{color:var(--yellow)!important}@media(max-width:600px){.cloud-bar{width:100%;justify-content:space-between}.cloud-status{max-width:65%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 </style>
 </head>
 <body>
+<div id="authOverlay" class="auth-overlay">
+  <div class="auth-card">
+    <h2>☁️ Облачная синхронизация</h2>
+    <p>Войди в аккаунт, чтобы сделки, счета, заметки, конспекты и настройки были доступны на всех устройствах.</p>
+    <form id="authForm">
+      <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+      <div class="field"><label>Пароль</label><input id="authPassword" type="password" autocomplete="current-password" minlength="6" required placeholder="Минимум 6 символов"></div>
+      <div id="authMessage" class="auth-error"></div>
+      <button class="primary" style="width:100%" type="submit" id="authSubmit">Войти</button>
+    </form>
+    <button class="auth-switch" id="authModeBtn" type="button" onclick="toggleAuthMode()">Нет аккаунта? Зарегистрироваться</button>
+  </div>
+</div>
 <div class="container">
 <div class="header">
 <div class="header-left">
@@ -225,6 +240,7 @@ input,select,textarea{font-size:16px!important} textarea{min-height:100px}
 </div>
 </div>
 <div class="header-actions">
+<div class="cloud-bar"><span id="cloudStatus" class="cloud-status">☁️ Не выполнен вход</span><button id="cloudLogoutBtn" class="secondary cloud-btn" onclick="cloudLogout()" style="display:none">Выйти</button></div>
 <button class="settings-gear" onclick="openMainSettings()" title="Настройки">⚙️</button>
 </div>
 </div>
@@ -683,18 +699,21 @@ let customSettings = {
     radius: '14px', padding: '18px'
 };
 
-// Загрузка сохраненных данных
-try {
-const saved = JSON.parse(localStorage.getItem('tradingJournal') || '{"trades":[],"settings":{},"custom":{},"conspects":[],"notes":[],"accounts":[],"currentAccount":"default"}');
-trades = saved.trades || [];
-if (saved.settings) columnSettings = {...columnSettings, ...saved.settings};
-if (saved.custom) customSettings = {...customSettings, ...saved.custom};
-conspects = saved.conspects || [];
-notes = saved.notes || [];
-accounts = saved.accounts || [];
-currentAccount = saved.currentAccount || 'default';
-if (!Array.isArray(trades)) trades = [];
-} catch(e) { trades = []; }
+// Локальный кэш — используется как быстрый офлайн-слой и для миграции старых данных.
+function loadLocalData() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('tradingJournal') || '{"trades":[],"settings":{},"custom":{},"conspects":[],"notes":[],"accounts":[],"currentAccount":"default"}');
+    trades = saved.trades || [];
+    if (saved.settings) columnSettings = {...columnSettings, ...saved.settings};
+    if (saved.custom) customSettings = {...customSettings, ...saved.custom};
+    conspects = saved.conspects || [];
+    notes = saved.notes || [];
+    accounts = saved.accounts || [];
+    currentAccount = saved.currentAccount || 'default';
+    if (!Array.isArray(trades)) trades = [];
+  } catch(e) { trades = []; conspects=[]; notes=[]; accounts=[]; }
+}
+loadLocalData();
 
 // Если нет счетов - создаем дефолтный
 if (accounts.length === 0) {
@@ -1546,13 +1565,48 @@ function resetSettings() {
     saveAllData();
     updateColumnVisibility();
 }
+function getAllJournalData() {
+    return { trades, settings: columnSettings, custom: customSettings, conspects, notes, accounts, currentAccount };
+}
+let cloudSaveTimer = null;
 function saveAllData() {
-    localStorage.setItem('tradingJournal', JSON.stringify({
-        trades, settings: columnSettings,
-        custom: customSettings,
-        conspects, notes,
-        accounts, currentAccount
-    }));
+    const payload = getAllJournalData();
+    localStorage.setItem('tradingJournal', JSON.stringify(payload));
+    if (window.cloudUser) {
+        clearTimeout(cloudSaveTimer);
+        cloudSaveTimer = setTimeout(() => cloudSaveNow(payload), 450);
+    }
+}
+async function cloudSaveNow(payload = getAllJournalData()) {
+    if (!window.cloudUser || !window.supabaseClient) return;
+    setCloudStatus('☁️ Сохраняю...', true);
+    const { error } = await window.supabaseClient.from('journal_data').upsert({
+        user_id: window.cloudUser.id, data: payload, updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id' });
+    if (error) { console.error(error); setCloudStatus('⚠️ Ошибка синхронизации'); }
+    else setCloudStatus('☁️ Синхронизировано');
+}
+async function cloudLoad() {
+    if (!window.cloudUser || !window.supabaseClient) return false;
+    setCloudStatus('☁️ Загружаю...', true);
+    const { data, error } = await window.supabaseClient.from('journal_data').select('data,updated_at').eq('user_id', window.cloudUser.id).maybeSingle();
+    if (error) { setCloudStatus('⚠️ Ошибка загрузки'); throw error; }
+    if (data && data.data && Object.keys(data.data).length) {
+        const d = data.data;
+        trades = Array.isArray(d.trades) ? d.trades : [];
+        columnSettings = {...columnSettings, ...(d.settings || {})};
+        customSettings = {...customSettings, ...(d.custom || {})};
+        conspects = Array.isArray(d.conspects) ? d.conspects : [];
+        notes = Array.isArray(d.notes) ? d.notes : [];
+        accounts = Array.isArray(d.accounts) ? d.accounts : [];
+        currentAccount = d.currentAccount || 'default';
+        localStorage.setItem('tradingJournal', JSON.stringify(getAllJournalData()));
+        setCloudStatus('☁️ Синхронизировано');
+        return true;
+    }
+    // Первый вход: переносим существующие локальные данные в облако.
+    await cloudSaveNow(getAllJournalData());
+    return false;
 }
 function render(){
     renderAccounts();
@@ -1657,7 +1711,38 @@ document.getElementById('editForm').addEventListener('submit', async function(e)
 document.getElementById('editModal').addEventListener('click', function(e) { if (e.target === this) closeEditModal(); });
 document.getElementById('settingsOverlay').addEventListener('click', function(e) { if (e.target === this) closeSettings(); });
 
-render();
+// ===== ОБЛАЧНЫЙ АККАУНТ / SUPABASE =====
+const SUPABASE_URL = 'https://rzqnkyrsxwygjuiavtkd.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_TbmGDWYc9u5r0UFhJEZC8g_cmQGInY8';
+window.supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+window.cloudUser = null;
+let authRegisterMode = false;
+function setCloudStatus(text, syncing=false) { const el=document.getElementById('cloudStatus'); if(el){el.textContent=text;el.classList.toggle('syncing',!!syncing);} }
+function toggleAuthMode(){ authRegisterMode=!authRegisterMode; document.getElementById('authSubmit').textContent=authRegisterMode?'Зарегистрироваться':'Войти'; document.getElementById('authModeBtn').textContent=authRegisterMode?'Уже есть аккаунт? Войти':'Нет аккаунта? Зарегистрироваться'; document.getElementById('authPassword').autocomplete=authRegisterMode?'new-password':'current-password'; document.getElementById('authMessage').textContent=''; }
+async function authSubmit(e){
+ e.preventDefault(); const email=document.getElementById('authEmail').value.trim(); const password=document.getElementById('authPassword').value; const msg=document.getElementById('authMessage'); msg.className='auth-error'; msg.textContent='';
+ try {
+   let result;
+   if(authRegisterMode) result=await window.supabaseClient.auth.signUp({email,password});
+   else result=await window.supabaseClient.auth.signInWithPassword({email,password});
+   if(result.error) throw result.error;
+   if(authRegisterMode && !result.data.session){ msg.className='auth-success'; msg.textContent='Регистрация создана. Проверь почту, затем войди.'; return; }
+   if(result.data.session) { await onCloudLogin(result.data.session.user); }
+ } catch(err){ msg.textContent=err.message || 'Ошибка входа'; }
+}
+document.getElementById('authForm').addEventListener('submit', authSubmit);
+async function onCloudLogin(user){
+ window.cloudUser=user; document.getElementById('authOverlay').style.display='none'; document.getElementById('cloudLogoutBtn').style.display='inline-block'; setCloudStatus('☁️ '+(user.email||'Аккаунт'));
+ const hadCloud=await cloudLoad();
+ if(!hadCloud && accounts.length===0) { accounts.push({id:'default',name:'Основной',balance:10000}); await cloudSaveNow(getAllJournalData()); }
+ applyCustomSettingsToCSS(); render();
+}
+async function cloudLogout(){ await window.supabaseClient.auth.signOut(); window.cloudUser=null; document.getElementById('cloudLogoutBtn').style.display='none'; setCloudStatus('☁️ Не выполнен вход'); document.getElementById('authOverlay').style.display='flex'; }
+(async function initCloud(){
+ try { const {data}=await window.supabaseClient.auth.getSession(); if(data.session) await onCloudLogin(data.session.user); else { setCloudStatus('☁️ Войдите для синхронизации'); render(); } }
+ catch(e){ console.error(e); setCloudStatus('⚠️ Облако недоступно'); render(); }
+ window.supabaseClient.auth.onAuthStateChange(async (event, session)=>{ if(event==='SIGNED_IN' && session && !window.cloudUser) await onCloudLogin(session.user); });
+})();
 if ('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 </script>
 </body>
