@@ -30,6 +30,8 @@
 .balance-selector select:focus{border-color:var(--blue)}
 .balance-selector .add-account-btn{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:4px 10px;font-size:11px;cursor:pointer;transition:0.2s}
 .balance-selector .add-account-btn:hover{background:var(--border)}
+.balance-selector .delete-account-btn{background:var(--panel2);color:var(--red);border:1px solid var(--border);border-radius:var(--radius);padding:4px 10px;font-size:11px;cursor:pointer;transition:0.2s}
+.balance-selector .delete-account-btn:hover{background:var(--red);color:white}
 .header-actions{display:flex;align-items:center;gap:10px}
 .settings-gear{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:50%;width:38px;height:38px;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.3s;font-weight:700}
 .settings-gear:hover{background:var(--border);transform:rotate(60deg)}
@@ -224,7 +226,8 @@ input,select,textarea{font-size:16px!important} textarea{min-height:100px}
 <div class="balance-selector">
 <label style="font-size:12px;color:var(--muted)">Счет:</label>
 <select id="accountSelector" onchange="switchAccount()"></select>
-<button class="add-account-btn" onclick="openAddAccount()">+</button>
+<button class="add-account-btn" onclick="openAddAccount()" title="Добавить счет">+</button>
+<button class="delete-account-btn" onclick="deleteCurrentAccount()" title="Удалить текущий счет">🗑</button>
 </div>
 <div class="balance-editor">
 <label>💰 Баланс:</label>
@@ -704,11 +707,14 @@ function loadLocalData() {
   try {
     const saved = JSON.parse(localStorage.getItem('tradingJournal') || '{"trades":[],"settings":{},"custom":{},"conspects":[],"notes":[],"accounts":[],"currentAccount":"default"}');
     trades = saved.trades || [];
+    // Старые сделки без счета относим к основному счету.
+    trades = Array.isArray(trades) ? trades.map(t => ({...t, account: t.account || 'default'})) : [];
     if (saved.settings) columnSettings = {...columnSettings, ...saved.settings};
     if (saved.custom) customSettings = {...customSettings, ...saved.custom};
     conspects = saved.conspects || [];
     notes = saved.notes || [];
     accounts = saved.accounts || [];
+    accounts = Array.isArray(accounts) ? accounts.map(a => ({...a, balanceResetAt: +a.balanceResetAt || 0})) : [];
     currentAccount = saved.currentAccount || 'default';
     if (!Array.isArray(trades)) trades = [];
   } catch(e) { trades = []; conspects=[]; notes=[]; accounts=[]; }
@@ -775,7 +781,7 @@ function renderAccounts() {
     accounts.forEach(acc => {
         const opt = document.createElement('option');
         opt.value = acc.id;
-        opt.textContent = acc.name + ' ($' + acc.balance + ')';
+        opt.textContent = acc.name + ' ($' + getAccountBalance(acc.id).toFixed(2) + ')';
         selector.appendChild(opt);
         
         const opt2 = document.createElement('option');
@@ -816,6 +822,33 @@ function closeAddAccount() {
     document.getElementById('addAccountModal').style.display = 'none';
 }
 
+function deleteCurrentAccount() {
+    const acc = accounts.find(a => a.id === currentAccount);
+    if (!acc) return;
+
+    if (accounts.length <= 1) {
+        alert('Нельзя удалить последний счет. Сначала добавьте другой счет.');
+        return;
+    }
+
+    const accountTradesCount = trades.filter(t => t.account === currentAccount).length;
+    const tradesText = accountTradesCount === 1 ? 'сделка' : (accountTradesCount >= 2 && accountTradesCount <= 4 ? 'сделки' : 'сделок');
+    const message = accountTradesCount
+        ? `Удалить счет «${acc.name}»? Вместе с ним будут удалены все его ${accountTradesCount} ${tradesText}. Остальные счета и их сделки останутся без изменений.`
+        : `Удалить счет «${acc.name}»? Остальные счета останутся без изменений.`;
+
+    if (!confirm(message)) return;
+
+    // Удаляем только текущий счет и сделки, принадлежащие ему.
+    accounts = accounts.filter(a => a.id !== currentAccount);
+    trades = trades.filter(t => t.account !== currentAccount);
+
+    currentAccount = accounts[0].id;
+    saveAllData();
+    renderAccounts();
+    render();
+}
+
 document.getElementById('addAccountForm').addEventListener('submit', function(e) {
     e.preventDefault();
     const name = document.getElementById('accountName').value.trim();
@@ -833,9 +866,14 @@ document.getElementById('addAccountForm').addEventListener('submit', function(e)
 function getAccountBalance(accountId) {
     const acc = accounts.find(a => a.id === accountId);
     if (!acc) return 10000;
-    // Пересчитываем баланс на основе сделок для этого счета
+    // После сброса старые сделки остаются в дневнике, но больше не влияют на баланс.
     let bal = acc.balance;
-    const accountTrades = trades.filter(t => t.account === accountId && ['Win', 'Loss', 'BE'].includes(t.status));
+    const resetAt = +acc.balanceResetAt || 0;
+    const accountTrades = trades.filter(t =>
+        t.account === accountId &&
+        ['Win', 'Loss', 'BE'].includes(t.status) &&
+        (!resetAt || (+t.createdAt || 0) > resetAt)
+    );
     accountTrades.forEach(t => {
         const pnl = calcPnL(t, bal);
         if (pnl !== null) bal += pnl;
@@ -861,9 +899,13 @@ function resetBalance() {
     const acc = accounts.find(a => a.id === currentAccount);
     if (acc) {
         acc.balance = 10000;
+        // Фиксируем момент сброса: сделки до него остаются в истории,
+        // но не участвуют в расчете нового баланса.
+        acc.balanceResetAt = Date.now();
         saveAllData();
         updateBalanceDisplay();
         renderStatsTab();
+        renderAccounts();
     }
     hideBalanceReset();
 }
@@ -1487,14 +1529,7 @@ function calcPnL(t, balanceBefore) {
     return r * riskAmount;
 }
 function calculateBalances() {
-    const initBalance = getInitialBalance(currentAccount);
-    let bal = initBalance;
-    const accountTrades = trades.filter(t => t.account === currentAccount);
-    accountTrades.forEach(t => {
-        const pnl = calcPnL(t, bal);
-        if (pnl !== null) bal += pnl;
-    });
-    return bal;
+    return getAccountBalance(currentAccount);
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
 function updateBalanceDisplay() {
@@ -1632,7 +1667,8 @@ document.getElementById('tradeForm').addEventListener('submit', async function(e
             entry: entry.value, sl: sl.value, tp: tp.value, risk: risk.value,
             status: status.value, resultR: resultR.value, setup: setup.value,
             screenshot: screenshotData, comment: comment.value,
-            account: document.getElementById('tradeAccount').value || currentAccount
+            account: document.getElementById('tradeAccount').value || currentAccount,
+            createdAt: Date.now()
         };
         trades.unshift(t);
         saveAllData();
@@ -1652,8 +1688,15 @@ function del(i) {
     }
 }
 function clearAll() {
-    if (confirm('Удалить всю историю сделок? Баланс сбросится до начальных значений.')) {
-        trades = [];
+    const acc = accounts.find(a => a.id === currentAccount);
+    const accountName = acc ? acc.name : 'текущего счета';
+    if (confirm(`Удалить всю историю сделок только со счета «${accountName}»? Баланс этого счета сбросится до $10000. Остальные счета не будут затронуты.`)) {
+        // Удаляем только сделки текущего счета. Сделки остальных счетов сохраняем.
+        trades = trades.filter(t => t.account !== currentAccount);
+        if (acc) {
+            acc.balance = 10000;
+            acc.balanceResetAt = 0;
+        }
         saveAllData();
         render();
     }
@@ -1700,7 +1743,8 @@ document.getElementById('editForm').addEventListener('submit', async function(e)
             setup: document.getElementById('edit_setup').value,
             screenshot: screenshotData,
             comment: document.getElementById('edit_comment').value,
-            account: document.getElementById('edit_account').value || currentAccount
+            account: document.getElementById('edit_account').value || currentAccount,
+            createdAt: trades[editIndex].createdAt || Date.now()
         };
         trades[editIndex] = updated;
         saveAllData();
